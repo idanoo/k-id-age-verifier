@@ -3,11 +3,10 @@ import { Buffer } from 'node:buffer';
 
 const BASE_URL = 'https://eu-west-1.faceassure.com';
 const K_ID_DEPLOYMENT_ID = '20260210222654-016f063-production';
-const K_ID_TRACK_ACTION = '601d02be14a2f7e7e50a862f6a0585c9b64d928a84';
-const K_ID_UPGRADE_TOKEN_ACTION = '40f05c36f2421425f977611b87af923acca2feaaf7';
 const K_ID_PRIVATELY_ACTION_ID = '40dc500368168e3130ea4625c535d5a9bbbf0243f1';
 const K_ID_NEXT_ROUTER_TREE =
 	'%5B%22%22%2C%7B%22children%22%3A%5B%22verify%22%2C%7B%22children%22%3A%5B%22__PAGE__%22%2C%7B%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%5D%7D%2Cnull%2Cnull%2Ctrue%5D';
+const PRIVATELY_URL_REGEX = /(https:\/\/[a-z0-9]+\.cloudfront\.net\/.*)(?=:\{)/	
 
 const jsonResponse = (body: unknown, status: number = 200, extraHeaders: object = {}) =>
 	new Response(JSON.stringify(body), {
@@ -482,33 +481,13 @@ async function verify(
 					distancing: {
 						screenDetectionConfidence: Array.from({ length: 2 }, () => randomFloat(0.01, 0.03)),
 						screenFaceOverlap: [0, 0],
-						screenBoundingBoxes: [
-							[],
-							[
-								{
-									x: 1,
-									y: 60,
-									width: 158,
-									height: 335
-								}
-							]
-						],
+						screenBoundingBoxes: [Array.from({ length: 2 }, generateBoundingBox)],
 						alternativeScore: Array.from({ length: 2 }, () => randomFloat(0.2, 0.9))
 					},
 					closing: {
 						screenDetectionConfidence: Array.from({ length: 2 }, () => randomFloat(0.01, 0.03)),
 						screenFaceOverlap: [0, 0],
-						screenBoundingBoxes: [
-							[
-								{
-									x: 370,
-									y: 233,
-									width: 58,
-									height: 85
-								}
-							],
-							[]
-						],
+						screenBoundingBoxes: [Array.from({ length: 2 }, generateBoundingBox)],
 						alternativeScore: Array.from({ length: 2 }, () => randomFloat(0.2, 0.9))
 					},
 					postChallenge: {
@@ -597,9 +576,9 @@ async function verify(
 					txFinishedInLandscapeMode: false
 				},
 				initializationCharacteristics: {
-					cropperInitTime: 2718,
-					coreInitTime: 6746,
-					pageLoadTime: 602.0999999996275,
+					cropperInitTime: randomInt(150, 250),
+					coreInitTime: randomInt(800, 1000),
+					pageLoadTime: randomInt(250, 350),
 					from_qr_scan: false,
 					blendShapesAvailable: true
 				},
@@ -785,9 +764,42 @@ export const POST = async (event: RequestEvent) => {
 		}
 
 		const payload = JSON.parse(atob(parts[1]));
+		 
+		// fetch the webview first
+		await fetch(webviewUrl)
+		const privately = await fetch(webviewUrl, {
+			method: 'POST',
+			headers: {
+                'User-Agent': userAgent,
+                accept: '*/*',
+                'accept-language': location.lang,
+                priority: 'u=1, i',
+                'sec-fetch-dest': 'empty',
+                'sec-fetch-mode': 'cors',
+                'sec-fetch-site': 'cross-site',
+                'Next-Action': K_ID_PRIVATELY_ACTION_ID,
+                'Next-Router-State-Tree': K_ID_NEXT_ROUTER_TREE,
+                'X-Deployment-Id': K_ID_DEPLOYMENT_ID,
+                'Content-Type': 'application/json',
+                Origin: 'https://family.k-id.com',
+                Referer: identifier
+            },
+			body: JSON.stringify([{"verificationId":payload.jti,"useBranding":true,"attemptId":crypto.randomUUID()}])
+		}).then(res => res.text());
 
-		// todo: implement getting a privately token from a k-id token
-		return jsonResponse({ error: 'not implemented' }, 418);
+		const match = privately.match(PRIVATELY_URL_REGEX);
+		if (match) {
+			const privatelyUrl = new URL(match[1]);
+			const privatelyToken = privatelyUrl.searchParams.get('token');
+			if (!privatelyToken) {
+				return jsonResponse({ error: 'no privately token' }, 400);
+			}
+			await verify(userAgent, location, privatelyToken);
+		} else {
+			return jsonResponse({ error: 'no privately url found in response' }, 400);	
+		}
+
+		return jsonResponse({ success: true }, 200);
 	}
 
 	return jsonResponse({ error: 'unexpected type' }, 400);
